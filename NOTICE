@@ -1,0 +1,83 @@
+Tanzo
+Copyright 2026 f4tumnigrum
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the accompanying LICENSE file or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE NOTICES
+--------------------------------------------------------------------------------
+
+This product bundles third-party software. The following components are
+distributed with the application, in source or binary form, under their
+respective licenses. Full license texts are available in each package's
+distribution and at the URLs noted below.
+
+Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+  - @ai-sdk/anthropic
+  - @ai-sdk/deepseek
+  - @ai-sdk/google
+  - @ai-sdk/mcp
+  - @ai-sdk/openai
+  - @ai-sdk/openai-compatible
+  - @ai-sdk/provider
+  - @ai-sdk/provider-utils
+  - ai (Vercel AI SDK)
+  - class-variance-authority
+
+MIT License (https://opensource.org/licenses/MIT)
+  - @base-ui/react
+  - @electron-toolkit/utils
+  - @tanstack/react-query
+  - @tanstack/react-table
+  - @vscode/ripgrep
+  - better-sqlite3
+  - chokidar
+  - clsx
+  - cmdk
+  - electron-log
+  - fix-path
+  - i18next
+  - katex
+  - motion
+  - next-themes
+  - react-i18next
+  - react-markdown
+  - react-resizable-panels
+  - react-router-dom
+  - react-syntax-highlighter
+  - react-virtuoso
+  - recharts
+  - rehype-katex
+  - remark-gfm
+  - remark-math
+  - simple-git
+  - sonner
+  - tailwind-merge
+  - zod
+  - zustand
+
+ISC License (https://opensource.org/licenses/ISC)
+  - lucide-react
+
+--------------------------------------------------------------------------------
+RUNTIME COMPONENTS
+--------------------------------------------------------------------------------
+
+Distributed binaries of this application also include the following runtime
+components under their respective licenses:
+
+  - Electron (MIT License) and its bundled components, including the Chromium
+    project (BSD-3-Clause and others) and Node.js (MIT License). See the
+    LICENSE.electron.txt and LICENSES.chromium.html files included in packaged
+    builds for full texts.
+  - SQLite, vendored by better-sqlite3, is released into the public domain
+    (https://www.sqlite.org/copyright.html).
+
+--------------------------------------------------------------------------------
+
+A complete dependency manifest with exact versions is available in package.json
+and pnpm-lock.yaml. License identifiers above reflect each package's declared
+license at the time of writing; consult each package for authoritative terms.

@@ -1,0 +1,113 @@
+import { describe, expect, it } from 'vitest'
+import { isTaskTerminal, taskTransition } from '@main/agent/subagent/task.machine'
+import type { SubagentTask } from '@shared/subagent-task'
+
+function task(overrides: Partial<SubagentTask> = {}): SubagentTask {
+  return {
+    id: 'explore-1',
+    chatId: 'child',
+    parentChatId: 'root',
+    rootChatId: 'root',
+    agentType: 'explore',
+    objective: 'inspect',
+    status: 'running',
+    dependsOn: [],
+    allowedTools: null,
+    phases: [],
+    createdAt: 1,
+    ...overrides
+  }
+}
+
+describe('agent/subagent/task.machine', () => {
+  it('is pure: does not mutate the input task', () => {
+    const before = task({ block: { kind: 'approval', approvals: [] } })
+    const snapshot = structuredClone(before)
+    taskTransition(before, { kind: 'complete', summary: 'ok', now: 5 })
+    expect(before).toEqual(snapshot)
+  })
+
+  it('completes a running task, clears block, and notifies awaiters', () => {
+    const result = taskTransition(task(), { kind: 'complete', summary: 'done', now: 9 })
+    expect(result.state.status).toBe('done')
+    expect(result.state.completedAt).toBe(9)
+    expect(result.state.result).toEqual({ summary: 'done' })
+    expect(result.effects).toEqual([{ kind: 'persist' }, { kind: 'notify-settled' }])
+  })
+
+  it('treats completing an already-terminal task as a no-op', () => {
+    const done = task({ status: 'done' })
+    const result = taskTransition(done, { kind: 'complete', summary: 'x', now: 1 })
+    expect(result.state).toBe(done)
+    expect(result.effects).toEqual([])
+  })
+
+  it('surfaces and clears an approval block', () => {
+    const surfaced = taskTransition(task(), {
+      kind: 'surface-approvals',
+      approvals: [{ approvalId: 'a1', toolName: 'shell', input: {} }]
+    })
+    expect(surfaced.state.status).toBe('blocked')
+    expect(surfaced.state.block).toEqual({
+      kind: 'approval',
+      approvals: [{ approvalId: 'a1', toolName: 'shell', input: {} }]
+    })
+
+    const cleared = taskTransition(surfaced.state, { kind: 'clear-approval-block' })
+    expect(cleared.state.status).toBe('running')
+    expect(cleared.state.block).toBeUndefined()
+  })
+
+  it('does not clear a non-approval block', () => {
+    const blocked = task({ status: 'pending', block: { kind: 'dependency', taskIds: ['x'] } })
+    const result = taskTransition(blocked, { kind: 'clear-approval-block' })
+    expect(result.state).toBe(blocked)
+    expect(result.effects).toEqual([])
+  })
+
+  it('only retries from a terminal failed/cancelled state', () => {
+    const running = taskTransition(task({ status: 'running' }), { kind: 'retry', now: 3 })
+    expect(running.effects).toEqual([])
+
+    const failed = taskTransition(
+      task({ status: 'failed', result: { summary: '', failed: true } }),
+      {
+        kind: 'retry',
+        now: 3
+      }
+    )
+    expect(failed.state.status).toBe('running')
+    expect(failed.state.result).toBeUndefined()
+    expect(failed.state.phases).toEqual([])
+  })
+
+  it('redefine resets objective, phases, and result', () => {
+    const result = taskTransition(task({ phases: [{ name: 'p', at: 1 }] }), {
+      kind: 'redefine',
+      objective: 'new goal',
+      now: 7
+    })
+    expect(result.state.objective).toBe('new goal')
+    expect(result.state.status).toBe('running')
+    expect(result.state.phases).toEqual([])
+  })
+
+  it('appends phases without dropping prior ones', () => {
+    const first = taskTransition(task(), { kind: 'set-phase', phase: 'reading', now: 2 })
+    const second = taskTransition(first.state, { kind: 'set-phase', phase: 'writing', now: 4 })
+    expect(second.state.phase).toBe('writing')
+    expect(second.state.phases).toEqual([
+      { name: 'reading', at: 2 },
+      { name: 'writing', at: 4 }
+    ])
+  })
+
+  it('exposes a terminal predicate matching done/failed/cancelled', () => {
+    expect(isTaskTerminal('done')).toBe(true)
+    expect(isTaskTerminal('failed')).toBe(true)
+    expect(isTaskTerminal('cancelled')).toBe(true)
+    expect(isTaskTerminal('running')).toBe(false)
+    expect(isTaskTerminal('pending')).toBe(false)
+    expect(isTaskTerminal('blocked')).toBe(false)
+  })
+})

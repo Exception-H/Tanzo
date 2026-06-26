@@ -1,0 +1,26 @@
+node_modules/
+dist/
+out/
+coverage/
+.vite/
+.cache/
+
+*.tsbuildinfo
+*.log*
+.DS_Store
+.eslintcache
+
+.env
+.env.*
+!.env.example
+
+# Development / internal configuration
+.claude/
+.mcp.json
+.tanzo-workflow-plan.md
+design.md
+design-elegant.md
+
+# Local agent instructions
+AGENTS.md
+CLAUDE.md

@@ -1,0 +1,206 @@
+import { describe, expect, it } from 'vitest'
+import type { ChatEvent } from '@shared/chat'
+import type { TanzoUIMessage } from '@shared/agent-message'
+import { createChatRunSessionRegistry } from '@main/agent/runtime/run-session-registry'
+
+const baseMessages: TanzoUIMessage[] = [
+  {
+    id: 'user-1',
+    role: 'user',
+    parts: [{ type: 'text', text: 'hello' }]
+  }
+]
+
+describe('agent/runtime/run-session-registry', () => {
+  it('buffers active run frames and retains notifications for snapshots', () => {
+    const streams = createChatRunSessionRegistry()
+    expect(streams.start('chat-1', 'run-1', baseMessages)).toEqual({
+      kind: 'run-state',
+      chatId: 'chat-1',
+      runId: 'run-1',
+      runKind: 'chat',
+      status: 'running'
+    })
+
+    streams.retainNotification('chat-1', {
+      type: 'data-compaction',
+      id: 'compaction:run-1',
+      data: { stage: 'start' }
+    } as never)
+    const first = streams.publish(
+      'chat-1',
+      { type: 'start', messageId: 'assistant-1' },
+      {
+        runId: 'run-1'
+      }
+    )
+    const stale = streams.publish(
+      'chat-1',
+      { type: 'text-delta', id: 't1', delta: 'late' },
+      {
+        runId: 'old-run'
+      }
+    )
+    const second = streams.publish(
+      'chat-1',
+      { type: 'text-start', id: 't1' },
+      {
+        runId: 'run-1'
+      }
+    )
+
+    expect(first).toMatchObject({
+      status: 'accepted',
+      frame: { kind: 'run-frame', runId: 'run-1', seq: 1 }
+    })
+    expect(stale).toEqual({ status: 'stale' })
+    expect(second).toMatchObject({
+      status: 'accepted',
+      frame: { kind: 'run-frame', runId: 'run-1', seq: 2 }
+    })
+    expect(streams.snapshot('chat-1')).toMatchObject({
+      chatId: 'chat-1',
+      runId: 'run-1',
+      status: 'running',
+      baseMessages,
+      notifications: [{ type: 'data-compaction', id: 'compaction:run-1' }],
+      frames: [
+        { seq: 1, chunk: { type: 'start', messageId: 'assistant-1' } },
+        { seq: 2, chunk: { type: 'text-start', id: 't1' } }
+      ]
+    })
+  })
+
+  it('replaces retained notifications with the same id', () => {
+    const streams = createChatRunSessionRegistry()
+    streams.start('chat-1', 'run-1', baseMessages)
+
+    streams.retainNotification('chat-1', {
+      type: 'data-context',
+      id: 'context:chat-1',
+      data: { usedTokens: 10, source: 'reported', cacheKind: 'auto', serverCompaction: false }
+    } as never)
+    streams.retainNotification('chat-1', {
+      type: 'data-context',
+      id: 'context:chat-1',
+      data: { usedTokens: 20, source: 'reported', cacheKind: 'auto', serverCompaction: false }
+    } as never)
+
+    expect(streams.snapshot('chat-1')?.notifications).toMatchObject([
+      { type: 'data-context', id: 'context:chat-1', data: { usedTokens: 20 } }
+    ])
+  })
+
+  it('only clears the matching active run', () => {
+    const streams = createChatRunSessionRegistry()
+    streams.start('chat-1', 'run-1', baseMessages)
+
+    expect(streams.finish('chat-1', 'old-run', 'finished')).toBeNull()
+    expect(streams.snapshot('chat-1')).not.toBeNull()
+
+    expect(streams.finish('chat-1', 'run-1', 'failed')).toEqual({
+      kind: 'run-state',
+      chatId: 'chat-1',
+      runId: 'run-1',
+      runKind: 'chat',
+      status: 'failed'
+    })
+    expect(streams.snapshot('chat-1')).toBeNull()
+  })
+
+  it('coalesces adjacent deltas in snapshots and live broadcasts', () => {
+    const events: ChatEvent[] = []
+    const streams = createChatRunSessionRegistry({
+      deliver: (event) => events.push(event),
+      batchMs: 1000
+    })
+    streams.start('chat-1', 'run-1', baseMessages)
+
+    streams.publish('chat-1', { type: 'text-start', id: 'text-1' }, { runId: 'run-1' })
+    const firstDelta = streams.publish(
+      'chat-1',
+      { type: 'text-delta', id: 'text-1', delta: 'hel' },
+      { runId: 'run-1' }
+    )
+    const secondDelta = streams.publish(
+      'chat-1',
+      { type: 'text-delta', id: 'text-1', delta: 'lo' },
+      { runId: 'run-1' }
+    )
+    streams.flush('chat-1')
+
+    expect(firstDelta).toMatchObject({
+      status: 'accepted',
+      frame: { seq: 2, chunk: { type: 'text-delta', delta: 'hel' } }
+    })
+    expect(secondDelta).toMatchObject({
+      status: 'accepted',
+      frame: { seq: 3, chunk: { type: 'text-delta', delta: 'lo' } }
+    })
+    expect(streams.snapshot('chat-1')?.frames).toMatchObject([
+      { seq: 1, chunk: { type: 'text-start', id: 'text-1' } },
+      { seq: 3, chunk: { type: 'text-delta', id: 'text-1', delta: 'hello' } }
+    ])
+    expect(events).toMatchObject([
+      { kind: 'run-state', status: 'running' },
+      { kind: 'run-frame', seq: 1, chunk: { type: 'text-start', id: 'text-1' } },
+      { kind: 'run-frame', seq: 3, chunk: { type: 'text-delta', delta: 'hello' } }
+    ])
+  })
+
+  it('carries a structured error on the terminal run-state event', () => {
+    const events: ChatEvent[] = []
+    const streams = createChatRunSessionRegistry({ deliver: (event) => events.push(event) })
+
+    streams.start('chat-1', 'run-1', baseMessages)
+    const terminal = streams.finish('chat-1', 'run-1', 'failed', {
+      code: 'CHAT_RUN_FAILED',
+      message: 'provider exploded'
+    })
+
+    expect(terminal).toEqual({
+      kind: 'run-state',
+      chatId: 'chat-1',
+      runId: 'run-1',
+      runKind: 'chat',
+      status: 'failed',
+      error: { code: 'CHAT_RUN_FAILED', message: 'provider exploded' }
+    })
+    expect(events.at(-1)).toEqual(terminal)
+    expect(streams.finish('chat-1', 'run-1', 'finished')).toBeNull()
+  })
+
+  it('threads runKind through start, snapshot, and terminal events for compaction runs', () => {
+    const events: ChatEvent[] = []
+    const streams = createChatRunSessionRegistry({ deliver: (event) => events.push(event) })
+
+    expect(streams.start('chat-1', 'run-1', baseMessages, { runKind: 'compaction' })).toEqual({
+      kind: 'run-state',
+      chatId: 'chat-1',
+      runId: 'run-1',
+      runKind: 'compaction',
+      status: 'running'
+    })
+    expect(streams.snapshot('chat-1')).toMatchObject({ runKind: 'compaction' })
+    expect(streams.finish('chat-1', 'run-1', 'aborted')).toMatchObject({
+      runKind: 'compaction',
+      status: 'aborted'
+    })
+  })
+
+  it('emits an aborted terminal event when a new run supersedes an active run', () => {
+    const events: ChatEvent[] = []
+    const streams = createChatRunSessionRegistry({ deliver: (event) => events.push(event) })
+
+    streams.start('chat-1', 'run-1', baseMessages)
+    streams.start('chat-1', 'run-2', baseMessages)
+
+    expect(events).toMatchObject([
+      { kind: 'run-state', runId: 'run-1', status: 'running' },
+      { kind: 'run-state', runId: 'run-1', status: 'aborted' },
+      { kind: 'run-state', runId: 'run-2', status: 'running' }
+    ])
+    expect(streams.finish('chat-1', 'run-1', 'finished')).toBeNull()
+    expect(streams.snapshot('chat-1')).toMatchObject({ runId: 'run-2' })
+  })
+})
