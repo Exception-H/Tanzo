@@ -55,11 +55,13 @@ jobs:
           echo "=== TEST OUTPUT (exit $status) ==="
           cat test-out.txt
           if [ $status -ne 0 ]; then
-            grep -nE 'FAIL|×|✗|Error:|AssertionError|Unhandled|rejection|Serialized Error|ELIFECYCLE|terminated' test-out.txt \
-              | head -40 \
+            # strip ANSI, then emit the failure detail blocks (errors + stacks) as annotations
+            sed 's/\x1b\[[0-9;]*m//g' test-out.txt > clean.txt
+            grep -nE 'Error|Cannot|is not a function|Caused by|ERR_|throw|sqlite|Failed|undefined \(reading|Serialized|at .*\.(test|ts)' clean.txt \
+              | head -60 \
               | while IFS= read -r line; do
-                  clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/%/%25/g; s/\r/ /g')
-                  echo "::error::$clean"
+                  c=$(printf '%s' "$line" | sed 's/%/%25/g')
+                  echo "::error::$c"
                 done
           fi
           exit $status
