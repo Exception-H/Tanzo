@@ -87,6 +87,7 @@ interface ShellSessionEntry {
   startedAt: number
   updatedAt: number
   timeout?: ReturnType<typeof setTimeout>
+  killTimer?: ReturnType<typeof setTimeout>
   killReason?: ShellSessionReason
   retainedStdout: TextWindow
   retainedStderr: TextWindow
@@ -99,6 +100,7 @@ const DEFAULT_MAX_SESSIONS = 32
 const DEFAULT_MAX_OUTPUT_CHARS = 60_000
 const DEFAULT_YIELD_TIME_MS = 1_000
 const MAX_YIELD_TIME_MS = 30_000
+const KILL_CLOSE_GRACE_MS = 2_000
 
 class TextWindow {
   private head = ''
@@ -182,6 +184,12 @@ function killProcessTree(child: ShellProcess, platform: NodeJS.Platform): void {
   }
 }
 
+function destroyChildStreams(child: ShellProcess): void {
+  child.stdin.destroy()
+  child.stdout.destroy()
+  child.stderr.destroy()
+}
+
 async function spawnCandidate(
   candidate: ShellCandidate,
   command: string,
@@ -253,12 +261,27 @@ export function createShellSessionService(
   ): void {
     if (entry.status !== 'running') return
     if (entry.timeout) clearTimeout(entry.timeout)
+    if (entry.killTimer) clearTimeout(entry.killTimer)
     entry.status = status
     entry.reason = reason
     entry.exitCode = codeForReason(reason, code)
     entry.child = null
     touch(entry)
     notify(entry)
+  }
+
+  function forceKill(entry: ShellSessionEntry, reason: ShellSessionReason): void {
+    if (!entry.child || entry.status !== 'running') return
+    const child = entry.child
+    entry.killReason = reason
+    killProcessTree(child, platform)
+    entry.killTimer = setTimeout(() => {
+      if (entry.status !== 'running') return
+      destroyChildStreams(child)
+      const status = reason === 'abort' || reason === 'closed' ? 'stopped' : 'exited'
+      settle(entry, status, codeForReason(reason, null), reason)
+    }, KILL_CLOSE_GRACE_MS)
+    entry.killTimer.unref?.()
   }
 
   async function waitForOutput(
@@ -366,8 +389,7 @@ export function createShellSessionService(
       }
       sessions.set(sessionId, entry)
       const abortStartedSession = (): void => {
-        entry.killReason = 'abort'
-        if (entry.child && entry.status === 'running') killProcessTree(entry.child, platform)
+        forceKill(entry, 'abort')
       }
       signal?.addEventListener('abort', abortStartedSession, { once: true })
 
@@ -392,8 +414,7 @@ export function createShellSessionService(
           settle(entry, 'stopped', 130, 'abort')
         } else if (timeoutMs) {
           entry.timeout = setTimeout(() => {
-            entry.killReason = 'timeout'
-            if (entry.child) killProcessTree(entry.child, platform)
+            forceKill(entry, 'timeout')
           }, timeoutMs)
         }
       } catch (error) {
@@ -435,9 +456,11 @@ export function createShellSessionService(
     async stop({ chatId, sessionId, signal }) {
       const entry = assertOwnSession(chatId, sessionId)
       if (entry.child && entry.status === 'running') {
+        const child = entry.child
         entry.killReason = 'abort'
-        killProcessTree(entry.child, platform)
+        killProcessTree(child, platform)
         await waitForOutput(entry, 1_000, signal)
+        if (entry.status === 'running') destroyChildStreams(child)
       }
       if (entry.status === 'running') settle(entry, 'stopped', 130, 'abort')
       return { stopped: true, sessionId }
@@ -455,8 +478,11 @@ export function createShellSessionService(
       sessions.clear()
       for (const entry of entries) {
         if (!entry.child || entry.status !== 'running') continue
+        const child = entry.child
         entry.killReason = 'closed'
-        killProcessTree(entry.child, platform)
+        killProcessTree(child, platform)
+        destroyChildStreams(child)
+        settle(entry, 'stopped', 130, 'closed')
       }
     }
   }

@@ -10,6 +10,8 @@ type ShellProcess = ChildProcessByStdio<null, Readable, Readable>
 
 const BACKGROUND_SHELL_STDIO: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe']
 
+const EXIT_CLOSE_GRACE_MS = 2_000
+
 interface ShellRunnerOptions {
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
@@ -104,7 +106,32 @@ async function* runCandidate({
     resume?.()
   }
 
-  setKillProcessTree(() => killProcessTree(child, platform))
+  let graceTimer: ReturnType<typeof setTimeout> | null = null
+
+  const tearDownStreams = (): void => {
+    child.stdout.destroy()
+    child.stderr.destroy()
+  }
+
+  const clearGrace = (): void => {
+    if (graceTimer) clearTimeout(graceTimer)
+    graceTimer = null
+  }
+
+  const armGrace = (finalCode: number): void => {
+    if (done || graceTimer) return
+    graceTimer = setTimeout(() => {
+      graceTimer = null
+      tearDownStreams()
+      finish(finalCode)
+    }, EXIT_CLOSE_GRACE_MS)
+    graceTimer.unref?.()
+  }
+
+  setKillProcessTree(() => {
+    killProcessTree(child, platform)
+    armGrace(1)
+  })
 
   child.stdout.setEncoding('utf8')
   child.stderr.setEncoding('utf8')
@@ -119,7 +146,11 @@ async function* runCandidate({
     push({ type: 'stderr', data: `${candidate.label}: ${error.message}` })
     finish(1, 'error')
   })
-  child.on('close', (code, closeSignal) => finish(code ?? codeForSignal(closeSignal) ?? 1))
+  child.on('exit', (code, exitSignal) => armGrace(code ?? codeForSignal(exitSignal) ?? 1))
+  child.on('close', (code, closeSignal) => {
+    clearGrace()
+    finish(code ?? codeForSignal(closeSignal) ?? 1)
+  })
 
   try {
     while (true) {
@@ -130,6 +161,7 @@ async function* runCandidate({
       })
     }
   } finally {
+    clearGrace()
     if (done) setKillProcessTree(null)
   }
 
