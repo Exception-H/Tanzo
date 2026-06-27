@@ -9,6 +9,7 @@ import type { TanzoDataParts, TanzoUIMessage } from '@shared/agent-message'
 import { TanzoError } from '@shared/errors'
 import { applyApprovalResponses } from '@shared/approval-responses'
 import { deriveStatus, type ThreadGoal } from '@shared/goal'
+import i18n from '@/i18n'
 import { chatClient } from '@/platform/electron/chat-client'
 import { goalClient } from '@/platform/electron/goal-client'
 import {
@@ -231,12 +232,24 @@ function createChatSession(chatId: string, onDispose: () => void): ChatSession {
       handleTelemetry: (event) => setState({ runNotice: reduceRunNotice(state.runNotice, event) })
     })
 
-  const startSink = (seedMessage?: TanzoUIMessage): MessageSink =>
-    createMessageSink({
-      onMessage: (message) => setState({ messages: upsertMessage(state.messages, message) }),
+  const startSink = (seedMessage?: TanzoUIMessage): MessageSink => {
+    let active = true
+    const inner = createMessageSink({
+      onMessage: (message) => {
+        if (!active) return
+        setState({ messages: upsertMessage(state.messages, message) })
+      },
       onError: reportError,
       ...(seedMessage ? { seedMessage } : {})
     })
+    return {
+      enqueue: (chunk) => inner.enqueue(chunk),
+      close: () => {
+        active = false
+        inner.close()
+      }
+    }
+  }
 
   const refresh = async (options?: {
     ifSettleRefreshRevision?: number
@@ -398,28 +411,33 @@ function createChatSession(chatId: string, onDispose: () => void): ChatSession {
     const lower = trimmed.toLowerCase()
     if (!trimmed) {
       const current = await goalClient.get(chatId)
-      return current ? `Goal: ${current.objective} (${deriveStatus(current)})` : 'No active goal.'
+      return current
+        ? i18n.t('chat.goal.command.current', {
+            objective: current.objective,
+            status: deriveStatus(current)
+          })
+        : i18n.t('chat.goal.command.none')
     }
     if (lower === 'clear') {
       await goalClient.clear(chatId)
       setState({ goal: null })
-      return 'Goal cleared.'
+      return i18n.t('chat.goal.command.cleared')
     }
     if (lower === 'pause') {
       setState({ goal: toGoalView(await goalClient.setStatus(chatId, 'paused')) })
-      return 'Goal paused.'
+      return i18n.t('chat.goal.command.paused')
     }
     if (lower === 'resume') {
       setState({ goal: toGoalView(await goalClient.setStatus(chatId, 'active')) })
-      return 'Goal resumed.'
+      return i18n.t('chat.goal.command.resumed')
     }
     const existing = await goalClient.get(chatId)
     if (existing) {
       setState({ goal: toGoalView(await goalClient.updateObjective(chatId, trimmed)) })
-      return 'Goal objective updated.'
+      return i18n.t('chat.goal.command.objectiveUpdated')
     }
     setState({ goal: toGoalView(await goalClient.create(chatId, { objective: trimmed })) })
-    return 'Goal set.'
+    return i18n.t('chat.goal.command.set')
   }
 
   teardownTimer = setTimeout(dispose, TEARDOWN_DELAY_MS)

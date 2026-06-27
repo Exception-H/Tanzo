@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => {
   return { listeners, messagesByChat, chatClient, goalClient, queryClient }
 })
 
+vi.mock('@/i18n', () => ({ default: { t: (key: string) => key } }))
 vi.mock('@/platform/electron/chat-client', () => ({ chatClient: mocks.chatClient }))
 vi.mock('@/platform/electron/goal-client', () => ({ goalClient: mocks.goalClient }))
 vi.mock('@/common/query-client', () => ({ queryClient: mocks.queryClient }))
